@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+ortools
+psycopg2-binary
+requests
+python-multipart
