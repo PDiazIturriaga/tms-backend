@@ -4,3 +4,4 @@ ortools
 psycopg2-binary
 requests
 python-multipart
+geopy
