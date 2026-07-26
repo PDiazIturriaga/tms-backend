@@ -6,7 +6,7 @@ import uvicorn
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from geopy.geocoders import Nominatim
+from geopy.geocoders import ArcGIS
 import time
 import math
 from ortools.constraint_solver import routing_enums_pb2
@@ -81,7 +81,7 @@ class ClienteNuevo(BaseModel):
 
 @app.post("/crear-cliente")
 def crear_cliente(cliente: ClienteNuevo):
-    geolocator = Nominatim(user_agent="tms_pro_app")
+    geolocator = ArcGIS()
     try:
         direccion_completa = f"{cliente.direccion}, Región Metropolitana, Chile"
         location = geolocator.geocode(direccion_completa, timeout=10)
