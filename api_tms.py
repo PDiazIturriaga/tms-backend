@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware  # <-- NUEVO: Importamos el motor CORS
 import os
 import requests
 import uvicorn
-from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -13,6 +13,17 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 app = FastAPI(title="API TMS - Torre de Control (SaaS Pro)")
+
+# ==========================================
+# PASAPORTE CORS PARA FLUTTER (NUEVO)
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ==========================================
 # CREDENCIALES DE LA NUBE
@@ -96,7 +107,6 @@ def buscar_cliente(nombre: str):
     try:
         conexion = psycopg2.connect(URL_BASE_DATOS)
         cursor = conexion.cursor(cursor_factory=RealDictCursor)
-        # Busca el nombre ignorando mayúsculas/minúsculas (ILIKE)
         cursor.execute("SELECT nombre, direccion FROM clientes WHERE nombre ILIKE %s ORDER BY id DESC LIMIT 1", (nombre,))
         cliente = cursor.fetchone()
         conexion.close()
@@ -114,7 +124,7 @@ class PuntoRuta(BaseModel):
     direccion: str
     latitud: float
     longitud: float
-    ventana: str # <-- NUEVO: Recibe el horario del frontend
+    ventana: str 
 
 class PeticionOptimizacion(BaseModel):
     patente: str
@@ -166,16 +176,13 @@ def optimizar_ruta(datos: PeticionOptimizacion):
 
     time_callback_index = routing.RegisterTransitCallback(time_callback)
     
-    # --- BLINDAJE CONTRA EL RECOLECTOR DE BASURA DE PYTHON ---
-    # Atamos las funciones al motor para que Python jamás las borre de la memoria durante el cálculo
     routing.distance_callback = distance_callback
     routing.time_callback = time_callback
     
-    # --- CORRECCIÓN DE TIEMPOS DE ESPERA ---
     routing.AddDimension(
         time_callback_index,
-        1440, # ¡AHORA PUEDE ESPERAR TODO EL DÍA! (1440 mins = 24 hrs)
-        1440, # Capacidad máxima de la jornada laboral
+        1440,
+        1440,
         False,
         'Time'
     )
@@ -208,9 +215,9 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     solucion = routing.SolveWithParameters(search_parameters)
 
     if not solucion:
-        return {"exito": False, "error": "Imposible cumplir. Los horarios elegidos chocan matemáticamente entre sí."}
+        return {"exito": False, "error": "Google OR-Tools no pudo encontrar una ruta que cumpla con esos horarios restrictivos."}
 
-    # 3.6. Guardar la ruta estructurada
+    # 3.6. Guardar la ruta estructurada en BD
     index = routing.Start(0)
     orden_optimo = []
     paso = 0
@@ -246,62 +253,19 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     except Exception as e:
         return {"exito": False, "error": f"Error guardando en base de datos: {e}"}
 
-    # 3.5. ¡Calcular!
-    solucion = routing.SolveWithParameters(search_parameters)
-
-    if not solucion:
-        return {"exito": False, "error": "Google OR-Tools no pudo encontrar una ruta que cumpla con esos horarios restrictivos."}
-
-    index = routing.Start(0)
-    orden_optimo = []
-    paso = 0
-    
-    while not routing.IsEnd(index):
-        nodo = manager.IndexToNode(index)
-        orden_optimo.append({
-            "orden": paso,
-            "direccion": puntos[nodo].direccion,
-            "tipo": "Inicio (Bodega)" if paso == 0 else "Entrega",
-            "estado": "PENDIENTE"
-        })
-        index = solucion.Value(routing.NextVar(index))
-        paso += 1
-
-    # 3.6. Guardar en BD
-    try:
-        conexion = psycopg2.connect(URL_BASE_DATOS)
-        cursor = conexion.cursor()
-        cursor.execute("DELETE FROM rutas_asignadas WHERE patente = %s", (datos.patente,))
-        
-        for p in orden_optimo:
-            cursor.execute("""
-                INSERT INTO rutas_asignadas (patente, orden, direccion, tipo, estado)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (datos.patente, p["orden"], p["direccion"], p["tipo"], p["estado"]))
-            
-        conexion.commit()
-        conexion.close()
-        return {"exito": True, "mensaje": "Ruta calculada y asignada al vehículo.", "ruta_ordenada": orden_optimo}
-        
-    except Exception as e:
-        return {"exito": False, "error": f"Error guardando en base de datos: {e}"}
-
 @app.post("/escanear-ruta")
 async def escanear_ruta(file: UploadFile = File(...)):
-    # 1. Leemos la imagen que mandó el celular
     contenido = await file.read()
     
-    # 2. Preparamos el envío a la Inteligencia Artificial (OCR.Space)
     payload = {
-        'apikey': 'helloworld', # Llave pública de prueba
-        'language': 'spa',      # Idioma Español
+        'apikey': 'helloworld',
+        'language': 'spa',
         'isOverlayRequired': False
     }
     
     archivos = {'file': (file.filename, contenido, file.content_type)}
     
     try:
-        # 3. Enviamos a la nube y esperamos que lea el texto
         res = requests.post("https://api.ocr.space/parse/image", files=archivos, data=payload)
         datos = res.json()
         
@@ -310,13 +274,11 @@ async def escanear_ruta(file: UploadFile = File(...)):
             
         texto_crudo = datos["ParsedResults"][0]["ParsedText"]
         
-        # 4. Filtro Lógico: Buscamos qué líneas del texto parecen direcciones
         lineas = texto_crudo.split('\n')
         direcciones_encontradas = []
         
         for linea in lineas:
             l = linea.strip()
-            # Si la línea tiene más de 5 letras y al menos un número (ej: Alameda 3920), sirve
             if len(l) > 5 and any(c.isdigit() for c in l):
                 direcciones_encontradas.append(l)
                 
@@ -327,6 +289,5 @@ async def escanear_ruta(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    # Si Render nos da un puerto, lo usamos. Si no, usamos el 8000 de prueba.
     puerto = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=puerto)
