@@ -28,7 +28,8 @@ app.add_middleware(
 # ==========================================
 # CREDENCIALES DE LA NUBE
 # ==========================================
-URL_BASE_DATOS = "postgresql://postgres:rTY3rCcKVQk6yc2b@db.xewyromxoprwvtkqveiw.supabase.co:5432/postgres"
+URL_BASE_DATOS = "postgresql://postgres.xewyromxoprwvtkqveiw:rTY3rCcKVQk6yc2b@aws-1-sa-east-1.pooler.supabase.com:6543/postgres
+"
 
 # ==========================================
 # 1. FUNCIONES BASE (LECTURA Y ESTADOS)
