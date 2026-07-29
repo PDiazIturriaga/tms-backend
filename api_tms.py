@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware  # <-- NUEVO: Importamos el motor CORS
+from fastapi.middleware.cors import CORSMiddleware  
 import os
 import requests
 import uvicorn
@@ -15,7 +15,7 @@ from ortools.constraint_solver import pywrapcp
 app = FastAPI(title="API TMS - Torre de Control (SaaS Pro)")
 
 # ==========================================
-# PASAPORTE CORS PARA FLUTTER (NUEVO)
+# PASAPORTE CORS PARA FLUTTER
 # ==========================================
 app.add_middleware(
     CORSMiddleware,
@@ -144,7 +144,6 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     if len(puntos) < 2:
         return {"exito": False, "error": "Se necesitan al menos 2 puntos."}
 
-    # 3.1. Matrices de Distancia
     distancias = []
     for i in range(len(puntos)):
         fila = []
@@ -158,14 +157,12 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     manager = pywrapcp.RoutingIndexManager(len(puntos), 1, 0)
     routing = pywrapcp.RoutingModel(manager)
 
-    # 3.2. Configurar Costo (Distancia)
     def distance_callback(from_index, to_index):
         return distancias[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
     
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-    # 3.3. Configurar Dimensión de TIEMPO
     def time_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
@@ -188,7 +185,6 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     )
     time_dimension = routing.GetDimensionOrDie('Time')
 
-    # 3.4. Aplicar Restricciones de Horario
     for i, punto in enumerate(puntos):
         index = manager.NodeToIndex(i)
         if punto.ventana == "Mañana (08:00 - 13:00)":
@@ -211,13 +207,11 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
 
-    # 3.5. ¡Calcular!
     solucion = routing.SolveWithParameters(search_parameters)
 
     if not solucion:
         return {"exito": False, "error": "Google OR-Tools no pudo encontrar una ruta que cumpla con esos horarios restrictivos."}
 
-    # 3.6. Guardar la ruta estructurada en BD
     index = routing.Start(0)
     orden_optimo = []
     paso = 0
@@ -287,6 +281,38 @@ async def escanear_ruta(file: UploadFile = File(...)):
     except Exception as e:
         return {"exito": False, "error": str(e)}
 
+# ==========================================
+# 4. SISTEMA DE FEEDBACK (NUEVO)
+# ==========================================
+class FeedbackApp(BaseModel):
+    estrellas: int
+    comentario: str
+    fecha: str
+
+@app.post("/feedback")
+def recibir_feedback(feedback: FeedbackApp):
+    try:
+        # Abrimos la conexión a tu base de datos Supabase
+        conexion = psycopg2.connect(URL_BASE_DATOS)
+        cursor = conexion.cursor()
+        
+        # Le ordenamos insertar los datos que llegaron desde el celular
+        cursor.execute("""
+            INSERT INTO feedback (estrellas, comentario, fecha_app)
+            VALUES (%s, %s, %s)
+        """, (feedback.estrellas, feedback.comentario, feedback.fecha))
+        
+        conexion.commit() # Guardamos los cambios
+        conexion.close()  # Cerramos la puerta
+        
+        return {"exito": True, "mensaje": "Feedback guardado exitosamente"}
+        
+    except Exception as e:
+        return {"exito": False, "error": f"Error guardando feedback: {str(e)}"}
+
+# ==========================================
+# ARRANQUE DEL SERVIDOR
+# ==========================================
 if __name__ == "__main__":
     import uvicorn
     puerto = int(os.environ.get("PORT", 8000))
