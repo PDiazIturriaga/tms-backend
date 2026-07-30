@@ -353,6 +353,43 @@ async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...
     except Exception as e:
         return {"exito": False, "error": str(e)}
 # ==========================================
+# 6. DASHBOARD Y ESTADÍSTICAS
+# ==========================================
+@app.get("/estadisticas")
+def obtener_estadisticas():
+    try:
+        conexion = psycopg2.connect(URL_BASE_DATOS)
+        cursor = conexion.cursor(cursor_factory=RealDictCursor)
+
+        # 1. Total de entregas completadas
+        cursor.execute("SELECT COUNT(*) as total FROM rutas_asignadas WHERE estado = 'ENTREGADO'")
+        rutas_completadas = cursor.fetchone()['total']
+
+        # 2. Entregas que tienen foto de respaldo (POD)
+        cursor.execute("SELECT COUNT(*) as total FROM rutas_asignadas WHERE estado = 'ENTREGADO' AND foto_url IS NOT NULL")
+        entregas_pod = cursor.fetchone()['total']
+
+        conexion.close()
+
+        # 3. Matemática de Negocios
+        # Calculamos el % de cumplimiento de fotos
+        porcentaje_pod = int((entregas_pod / rutas_completadas * 100)) if rutas_completadas > 0 else 0
+        
+        # Estimación de IA: Asumimos que la optimización ahorra ~2.5 km y ~15 min por cada entrega completada
+        km_ahorrados = int(rutas_completadas * 2.5)
+        tiempo_ganado_horas = int((rutas_completadas * 15) / 60)
+
+        return {
+            "exito": True,
+            "km_ahorrados": str(km_ahorrados),
+            "tiempo_ganado": str(tiempo_ganado_horas),
+            "porcentaje_pod": str(porcentaje_pod),
+            "rutas_completadas": str(rutas_completadas)
+        }
+        
+    except Exception as e:
+        return {"exito": False, "error": str(e)}
+# ==========================================
 # ARRANQUE DEL SERVIDOR
 # ==========================================
 if __name__ == "__main__":
