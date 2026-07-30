@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware  
 import os
 import requests
@@ -9,6 +9,7 @@ from psycopg2.extras import RealDictCursor
 from geopy.geocoders import ArcGIS
 import time
 import math
+import uuid # <-- NUEVO: Para crear nombres únicos de fotos
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
@@ -309,7 +310,48 @@ def recibir_feedback(feedback: FeedbackApp):
         
     except Exception as e:
         return {"exito": False, "error": f"Error guardando feedback: {str(e)}"}
+# ==========================================
+# 5. SISTEMA DE PRUEBA DE ENTREGA (POD)
+# ==========================================
+SUPABASE_URL = "https://xewyromxoprwvtkqveiw.supabase.co"
+SUPABASE_KEY = "PEGA_AQUÍ_TU_CLAVE_ANON_PUBLIC" # <--- ¡Pega tu clave aquí!
 
+@app.post("/entregar-pod")
+async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...)):
+    try:
+        # 1. Leer la foto enviada por el celular
+        contenido = await file.read()
+        nombre_archivo = f"pod_{id_despacho}_{uuid.uuid4().hex[:8]}.jpg"
+        
+        # 2. Subir la foto al "bucket" de Supabase
+        url_storage = f"{SUPABASE_URL}/storage/v1/object/pods/{nombre_archivo}"
+        headers = {
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": file.content_type
+        }
+        res = requests.post(url_storage, headers=headers, data=contenido)
+        
+        if res.status_code >= 400:
+            return {"exito": False, "error": "Error al guardar foto en la nube"}
+            
+        # 3. Generar el link público de la foto
+        foto_url = f"{SUPABASE_URL}/storage/v1/object/public/pods/{nombre_archivo}"
+        
+        # 4. Actualizar la base de datos: Marcar como ENTREGADO y guardar el link
+        conexion = psycopg2.connect(URL_BASE_DATOS)
+        cursor = conexion.cursor()
+        cursor.execute("""
+            UPDATE rutas_asignadas 
+            SET estado = 'ENTREGADO', foto_url = %s 
+            WHERE id_despacho = %s
+        """, (foto_url, id_despacho))
+        conexion.commit()
+        conexion.close()
+        
+        return {"exito": True, "foto_url": foto_url}
+        
+    except Exception as e:
+        return {"exito": False, "error": str(e)}
 # ==========================================
 # ARRANQUE DEL SERVIDOR
 # ==========================================
