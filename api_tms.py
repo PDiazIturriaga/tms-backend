@@ -354,6 +354,8 @@ async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...
         
     except Exception as e:
         return {"exito": False, "error": str(e)}
+from fastapi.responses import Response
+
 # ==========================================
 # 6. DASHBOARD Y ESTADÍSTICAS
 # ==========================================
@@ -374,10 +376,7 @@ def obtener_estadisticas():
         conexion.close()
 
         # 3. Matemática de Negocios
-        # Calculamos el % de cumplimiento de fotos
         porcentaje_pod = int((entregas_pod / rutas_completadas * 100)) if rutas_completadas > 0 else 0
-        
-        # Estimación de IA: Asumimos que la optimización ahorra ~2.5 km y ~15 min por cada entrega completada
         km_ahorrados = int(rutas_completadas * 2.5)
         tiempo_ganado_horas = int((rutas_completadas * 15) / 60)
 
@@ -391,40 +390,44 @@ def obtener_estadisticas():
         
     except Exception as e:
         return {"exito": False, "error": str(e)}
+
 # ==========================================
-# ARRANQUE DEL SERVIDOR
+# 7. MOTOR DE CARGA MASIVA (EXCEL) Y PLANTILLAS
 # ==========================================
-if __name__ == "__main__":
-    import uvicorn
-    puerto = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=puerto)
-# ==========================================
-# 6. MOTOR DE CARGA MASIVA (EXCEL)
-# ==========================================
+@app.get("/descargar-plantilla")
+async def descargar_plantilla():
+    # Creamos un Excel vacío pero con los encabezados perfectos
+    df = pd.DataFrame(columns=["cliente", "direccion", "orden"])
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='OptiRuta')
+        
+    headers = {
+        'Content-Disposition': 'attachment; filename="Plantilla_OptiRuta.xlsx"'
+    }
+    return Response(
+        content=output.getvalue(), 
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+        headers=headers
+    )
+
 @app.post("/subir-excel-ruta")
 async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...)):
     try:
-        # 1. Leer el archivo directamente en la memoria (sin guardarlo en el disco duro)
         contents = await file.read()
-        
-        # 2. Convertirlo en un DataFrame de Pandas usando openpyxl
         df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
-        
-        # 3. Limpieza rápida: Quitamos filas que estén completamente vacías
         df = df.dropna(how='all')
         
         records = []
         for index, row in df.iterrows():
-            # Extraemos los datos de las celdas (manejando posibles celdas vacías)
             cliente = str(row.get('cliente', f'Cliente {index+1}')).strip()
             direccion = str(row.get('direccion', '')).strip()
             orden = row.get('orden', index + 1)
             
-            # Si no hay dirección, saltamos esta fila para no generar errores
             if not direccion or direccion == 'nan':
                 continue
                 
-            # Armamos el paquete exacto que necesita tu base de datos
             records.append({
                 "patente": patente.upper(),
                 "cliente": cliente,
@@ -434,10 +437,20 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
                 "orden": int(orden) if pd.notna(orden) else (index + 1)
             })
 
-        # 4. Inyección masiva a Supabase
+        # Usamos psycopg2 igual que en el resto de tu app, apuntando a rutas_asignadas
         if records:
-            # Reemplaza 'despachos' por el nombre real de tu tabla si se llama distinto
-            respuesta = supabase.table("despachos").insert(records).execute()
+            conexion = psycopg2.connect(URL_BASE_DATOS)
+            cursor = conexion.cursor()
+            
+            for r in records:
+                cursor.execute("""
+                    INSERT INTO rutas_asignadas (patente, orden, direccion, tipo, estado)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (r["patente"], r["orden"], r["direccion"], r["tipo"], r["estado"]))
+                
+            conexion.commit()
+            conexion.close()
+            
             return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para la patente {patente}."}
         else:
             return {"exito": False, "error": "El Excel estaba vacío o sin direcciones válidas."}
@@ -445,3 +458,11 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
     except Exception as e:
         print(f"Error procesando Excel: {e}")
         return {"exito": False, "error": "Hubo un problema al leer el archivo. Asegúrate de usar la plantilla correcta."}
+
+# ==========================================
+# ARRANQUE DEL SERVIDOR (SIEMPRE AL FINAL)
+# ==========================================
+if __name__ == "__main__":
+    import uvicorn
+    puerto = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=puerto)
