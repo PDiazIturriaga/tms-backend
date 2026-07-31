@@ -314,7 +314,7 @@ def recibir_feedback(feedback: FeedbackApp):
 # 5. SISTEMA DE PRUEBA DE ENTREGA (POD)
 # ==========================================
 SUPABASE_URL = "https://xewyromxoprwvtkqveiw.supabase.co"
-SUPABASE_KEY = "PEGA_AQUÍ_TU_CLAVE_ANON_PUBLIC" # <--- ¡Pega tu clave aquí!
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhld3lyb214b3Byd3Z0a3F2ZWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE2OTEsImV4cCI6MjEwMDA2NzY5MX0.WMMRB_2koWCVXkOsI_dnNYmpjCSDYN90ViLAzQAtpyY" # <--- ¡Pega tu clave aquí!
 
 @app.post("/entregar-pod")
 async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...)):
