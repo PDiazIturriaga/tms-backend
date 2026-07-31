@@ -1,3 +1,5 @@
+import pandas as pd
+import io
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware  
 import os
@@ -396,3 +398,50 @@ if __name__ == "__main__":
     import uvicorn
     puerto = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=puerto)
+# ==========================================
+# 6. MOTOR DE CARGA MASIVA (EXCEL)
+# ==========================================
+@app.post("/subir-excel-ruta")
+async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...)):
+    try:
+        # 1. Leer el archivo directamente en la memoria (sin guardarlo en el disco duro)
+        contents = await file.read()
+        
+        # 2. Convertirlo en un DataFrame de Pandas usando openpyxl
+        df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
+        
+        # 3. Limpieza rápida: Quitamos filas que estén completamente vacías
+        df = df.dropna(how='all')
+        
+        records = []
+        for index, row in df.iterrows():
+            # Extraemos los datos de las celdas (manejando posibles celdas vacías)
+            cliente = str(row.get('cliente', f'Cliente {index+1}')).strip()
+            direccion = str(row.get('direccion', '')).strip()
+            orden = row.get('orden', index + 1)
+            
+            # Si no hay dirección, saltamos esta fila para no generar errores
+            if not direccion or direccion == 'nan':
+                continue
+                
+            # Armamos el paquete exacto que necesita tu base de datos
+            records.append({
+                "patente": patente.upper(),
+                "cliente": cliente,
+                "direccion": direccion,
+                "estado": "PENDIENTE",
+                "tipo": "Entrega",
+                "orden": int(orden) if pd.notna(orden) else (index + 1)
+            })
+
+        # 4. Inyección masiva a Supabase
+        if records:
+            # Reemplaza 'despachos' por el nombre real de tu tabla si se llama distinto
+            respuesta = supabase.table("despachos").insert(records).execute()
+            return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para la patente {patente}."}
+        else:
+            return {"exito": False, "error": "El Excel estaba vacío o sin direcciones válidas."}
+            
+    except Exception as e:
+        print(f"Error procesando Excel: {e}")
+        return {"exito": False, "error": "Hubo un problema al leer el archivo. Asegúrate de usar la plantilla correcta."}
