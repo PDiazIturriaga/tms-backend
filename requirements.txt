@@ -5,5 +5,5 @@ psycopg2-binary
 requests
 python-multipart
 geopy
-pandas==2.2.1
-openpyxl==3.1.2
+pandas
+openpyxl
