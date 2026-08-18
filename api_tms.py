@@ -41,7 +41,7 @@ def obtener_ruta_db(patente: str):
     cursor = conexion.cursor(cursor_factory=RealDictCursor)
     
     cursor.execute("""
-        SELECT id_despacho, orden, direccion, tipo, estado 
+        SELECT id_despacho, orden, cliente, direccion, tipo, estado  # <-- ¡Agregamos 'cliente' aquí!
         FROM rutas_asignadas 
         WHERE patente = %s 
         ORDER BY orden ASC
@@ -219,10 +219,12 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     orden_optimo = []
     paso = 0
     
+    # 1. Dentro del bucle while, agrega el campo cliente:
     while not routing.IsEnd(index):
         nodo = manager.IndexToNode(index)
         orden_optimo.append({
             "orden": paso,
+            "cliente": puntos[nodo].nombre, # <-- Capturamos el nombre desde Flutter
             "direccion": puntos[nodo].direccion,
             "latitud": puntos[nodo].latitud,
             "longitud": puntos[nodo].longitud,
@@ -237,11 +239,12 @@ def optimizar_ruta(datos: PeticionOptimizacion):
         cursor = conexion.cursor()
         cursor.execute("DELETE FROM rutas_asignadas WHERE patente = %s", (datos.patente,))
         
+        # 2. Actualizamos el INSERT para guardar la columna 'cliente'
         for p in orden_optimo:
             cursor.execute("""
-                INSERT INTO rutas_asignadas (patente, orden, direccion, latitud, longitud, tipo, estado)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (datos.patente, p["orden"], p["direccion"], p["latitud"], p["longitud"], p["tipo"], p["estado"]))
+                INSERT INTO rutas_asignadas (patente, orden, cliente, direccion, latitud, longitud, tipo, estado)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) # <-- Agregamos un %s más
+            """, (datos.patente, p["orden"], p["cliente"], p["direccion"], p["latitud"], p["longitud"], p["tipo"], p["estado"]))
             
         conexion.commit()
         conexion.close()
@@ -444,9 +447,9 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
             
             for r in records:
                 cursor.execute("""
-                    INSERT INTO rutas_asignadas (patente, orden, direccion, tipo, estado)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (r["patente"], r["orden"], r["direccion"], r["tipo"], r["estado"]))
+                    INSERT INTO rutas_asignadas (patente, orden, cliente, direccion, tipo, estado)
+                    VALUES (%s, %s, %s, %s, %s, %s) # <-- Agregamos un %s más para el cliente
+                """, (r["patente"], r["orden"], r["cliente"], r["direccion"], r["tipo"], r["estado"]))
                 
             conexion.commit()
             conexion.close()
