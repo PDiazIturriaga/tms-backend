@@ -1,17 +1,17 @@
-import pandas as pd
-import io
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware  
 import os
-import requests
-import uvicorn
-from pydantic import BaseModel
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from geopy.geocoders import ArcGIS
+import io
 import time
 import math
-import uuid # <-- NUEVO: Para crear nombres únicos de fotos
+import uuid
+import pandas as pd
+import requests
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from geopy.geocoders import ArcGIS
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
@@ -32,6 +32,8 @@ app.add_middleware(
 # CREDENCIALES DE LA NUBE
 # ==========================================
 URL_BASE_DATOS = "postgresql://postgres.xewyromxoprwvtkqveiw:rTY3rCcKVQk6yc2b@aws-1-sa-east-1.pooler.supabase.com:6543/postgres"
+SUPABASE_URL = "https://xewyromxoprwvtkqveiw.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhld3lyb214b3Byd3Z0a3F2ZWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE2OTEsImV4cCI6MjEwMDA2NzY5MX0.WMMRB_2koWCVXkOsI_dnNYmpjCSDYN90ViLAzQAtpyY"
 
 # ==========================================
 # 1. FUNCIONES BASE (LECTURA Y ESTADOS)
@@ -40,8 +42,9 @@ def obtener_ruta_db(patente: str):
     conexion = psycopg2.connect(URL_BASE_DATOS)
     cursor = conexion.cursor(cursor_factory=RealDictCursor)
     
+    # AQUÍ ESTÁ EL ARREGLO: Agregamos 'cliente'
     cursor.execute("""
-        SELECT id_despacho, orden, direccion, tipo, estado 
+        SELECT id_despacho, orden, cliente, direccion, tipo, estado 
         FROM rutas_asignadas 
         WHERE patente = %s 
         ORDER BY orden ASC
@@ -49,7 +52,6 @@ def obtener_ruta_db(patente: str):
     
     filas = cursor.fetchall()
     conexion.close()
-    
     return [dict(fila) for fila in filas]
 
 @app.get("/ruta/{patente}")
@@ -124,6 +126,8 @@ def buscar_cliente(nombre: str):
 # 3. MOTOR DE OPTIMIZACIÓN (CON VENTANAS HORARIAS)
 # ==========================================
 class PuntoRuta(BaseModel):
+    nombre: str = "Sin Nombre"
+    cliente: str = "Sin Nombre"
     direccion: str
     latitud: float
     longitud: float
@@ -209,11 +213,10 @@ def optimizar_ruta(datos: PeticionOptimizacion):
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-
     solucion = routing.SolveWithParameters(search_parameters)
 
     if not solucion:
-        return {"exito": False, "error": "Google OR-Tools no pudo encontrar una ruta que cumpla con esos horarios restrictivos."}
+        return {"exito": False, "error": "Google OR-Tools no pudo encontrar una ruta."}
 
     index = routing.Start(0)
     orden_optimo = []
@@ -221,8 +224,12 @@ def optimizar_ruta(datos: PeticionOptimizacion):
     
     while not routing.IsEnd(index):
         nodo = manager.IndexToNode(index)
+        # Recuperar el nombre seguro
+        nombre_cliente = puntos[nodo].nombre if puntos[nodo].nombre != "Sin Nombre" else puntos[nodo].cliente
+        
         orden_optimo.append({
             "orden": paso,
+            "cliente": nombre_cliente,
             "direccion": puntos[nodo].direccion,
             "latitud": puntos[nodo].latitud,
             "longitud": puntos[nodo].longitud,
@@ -239,48 +246,39 @@ def optimizar_ruta(datos: PeticionOptimizacion):
         
         for p in orden_optimo:
             cursor.execute("""
-                INSERT INTO rutas_asignadas (patente, orden, direccion, latitud, longitud, tipo, estado)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (datos.patente, p["orden"], p["direccion"], p["latitud"], p["longitud"], p["tipo"], p["estado"]))
+                INSERT INTO rutas_asignadas (patente, orden, cliente, direccion, latitud, longitud, tipo, estado)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (datos.patente, p["orden"], p["cliente"], p["direccion"], p["latitud"], p["longitud"], p["tipo"], p["estado"]))
             
         conexion.commit()
         conexion.close()
-        return {"exito": True, "mensaje": "Ruta calculada y asignada al vehículo.", "ruta_ordenada": orden_optimo}
+        return {"exito": True, "mensaje": "Ruta calculada", "ruta_ordenada": orden_optimo}
         
     except Exception as e:
-        return {"exito": False, "error": f"Error guardando en base de datos: {e}"}
+        return {"exito": False, "error": f"Error guardando: {e}"}
 
 @app.post("/escanear-ruta")
 async def escanear_ruta(file: UploadFile = File(...)):
     contenido = await file.read()
-    
     payload = {
         'apikey': 'helloworld',
         'language': 'spa',
         'isOverlayRequired': False
     }
-    
     archivos = {'file': (file.filename, contenido, file.content_type)}
-    
     try:
         res = requests.post("https://api.ocr.space/parse/image", files=archivos, data=payload)
         datos = res.json()
-        
         if datos.get("IsErroredOnProcessing"):
             return {"exito": False, "error": "La IA no pudo procesar esta imagen."}
-            
         texto_crudo = datos["ParsedResults"][0]["ParsedText"]
-        
         lineas = texto_crudo.split('\n')
         direcciones_encontradas = []
-        
         for linea in lineas:
             l = linea.strip()
             if len(l) > 5 and any(c.isdigit() for c in l):
                 direcciones_encontradas.append(l)
-                
         return {"exito": True, "direcciones": direcciones_encontradas}
-        
     except Exception as e:
         return {"exito": False, "error": str(e)}
 
@@ -295,51 +293,37 @@ class FeedbackApp(BaseModel):
 @app.post("/feedback")
 def recibir_feedback(feedback: FeedbackApp):
     try:
-        # Abrimos la conexión a tu base de datos Supabase
         conexion = psycopg2.connect(URL_BASE_DATOS)
         cursor = conexion.cursor()
-        
-        # Le ordenamos insertar los datos que llegaron desde el celular
         cursor.execute("""
             INSERT INTO feedback (estrellas, comentario, fecha_app)
             VALUES (%s, %s, %s)
         """, (feedback.estrellas, feedback.comentario, feedback.fecha))
-        
-        conexion.commit() # Guardamos los cambios
-        conexion.close()  # Cerramos la puerta
-        
+        conexion.commit() 
+        conexion.close()  
         return {"exito": True, "mensaje": "Feedback guardado exitosamente"}
-        
     except Exception as e:
         return {"exito": False, "error": f"Error guardando feedback: {str(e)}"}
+
 # ==========================================
 # 5. SISTEMA DE PRUEBA DE ENTREGA (POD)
 # ==========================================
-SUPABASE_URL = "https://xewyromxoprwvtkqveiw.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhld3lyb214b3Byd3Z0a3F2ZWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0OTE2OTEsImV4cCI6MjEwMDA2NzY5MX0.WMMRB_2koWCVXkOsI_dnNYmpjCSDYN90ViLAzQAtpyY" # <--- ¡Pega tu clave aquí!
-
 @app.post("/entregar-pod")
 async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...)):
     try:
-        # 1. Leer la foto enviada por el celular
         contenido = await file.read()
         nombre_archivo = f"pod_{id_despacho}_{uuid.uuid4().hex[:8]}.jpg"
-        
-        # 2. Subir la foto al "bucket" de Supabase
         url_storage = f"{SUPABASE_URL}/storage/v1/object/pods/{nombre_archivo}"
         headers = {
             "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": file.content_type
         }
         res = requests.post(url_storage, headers=headers, data=contenido)
-        
         if res.status_code >= 400:
             return {"exito": False, "error": "Error al guardar foto en la nube"}
             
-        # 3. Generar el link público de la foto
         foto_url = f"{SUPABASE_URL}/storage/v1/object/public/pods/{nombre_archivo}"
         
-        # 4. Actualizar la base de datos: Marcar como ENTREGADO y guardar el link
         conexion = psycopg2.connect(URL_BASE_DATOS)
         cursor = conexion.cursor()
         cursor.execute("""
@@ -349,12 +333,10 @@ async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...
         """, (foto_url, id_despacho))
         conexion.commit()
         conexion.close()
-        
         return {"exito": True, "foto_url": foto_url}
         
     except Exception as e:
         return {"exito": False, "error": str(e)}
-from fastapi.responses import Response
 
 # ==========================================
 # 6. DASHBOARD Y ESTADÍSTICAS
@@ -365,17 +347,14 @@ def obtener_estadisticas():
         conexion = psycopg2.connect(URL_BASE_DATOS)
         cursor = conexion.cursor(cursor_factory=RealDictCursor)
 
-        # 1. Total de entregas completadas
         cursor.execute("SELECT COUNT(*) as total FROM rutas_asignadas WHERE estado = 'ENTREGADO'")
         rutas_completadas = cursor.fetchone()['total']
 
-        # 2. Entregas que tienen foto de respaldo (POD)
         cursor.execute("SELECT COUNT(*) as total FROM rutas_asignadas WHERE estado = 'ENTREGADO' AND foto_url IS NOT NULL")
         entregas_pod = cursor.fetchone()['total']
 
         conexion.close()
 
-        # 3. Matemática de Negocios
         porcentaje_pod = int((entregas_pod / rutas_completadas * 100)) if rutas_completadas > 0 else 0
         km_ahorrados = int(rutas_completadas * 2.5)
         tiempo_ganado_horas = int((rutas_completadas * 15) / 60)
@@ -392,11 +371,10 @@ def obtener_estadisticas():
         return {"exito": False, "error": str(e)}
 
 # ==========================================
-# 7. MOTOR DE CARGA MASIVA (EXCEL) Y PLANTILLAS
+# 7. MOTOR DE CARGA MASIVA (EXCEL)
 # ==========================================
 @app.get("/descargar-plantilla")
 async def descargar_plantilla():
-    # Creamos un Excel vacío pero con los encabezados perfectos
     df = pd.DataFrame(columns=["cliente", "direccion", "orden"])
     output = io.BytesIO()
     
@@ -437,29 +415,22 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
                 "orden": int(orden) if pd.notna(orden) else (index + 1)
             })
 
-        # Usamos psycopg2 igual que en el resto de tu app, apuntando a rutas_asignadas
         if records:
             conexion = psycopg2.connect(URL_BASE_DATOS)
             cursor = conexion.cursor()
             
             for r in records:
                 cursor.execute("""
-                    INSERT INTO rutas_asignadas (patente, orden, direccion, tipo, estado)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (r["patente"], r["orden"], r["direccion"], r["tipo"], r["estado"]))
+                    INSERT INTO rutas_asignadas (patente, orden, cliente, direccion, tipo, estado)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (r["patente"], r["orden"], r["cliente"], r["direccion"], r["tipo"], r["estado"]))
                 
             conexion.commit()
             conexion.close()
-            
-            return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para la patente {patente}."}
+            return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para {patente}."}
         else:
-            return {"exito": False, "error": "El Excel estaba vacío o sin direcciones válidas."}
+            return {"exito": False, "error": "El Excel estaba vacío o sin direcciones."}
             
     except Exception as e:
         print(f"Error procesando Excel: {e}")
-        return {"exito": False, "error": "Hubo un problema al leer el archivo. Asegúrate de usar la plantilla correcta."}
-
-# ==========================================
-# ARRANQUE DEL SERVIDOR (SIEMPRE AL FINAL)
-# ==========================================
-
+        return {"exito": False, "error": "Error al leer el archivo."}
