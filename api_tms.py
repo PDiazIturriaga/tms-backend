@@ -462,7 +462,4 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
 # ==========================================
 # ARRANQUE DEL SERVIDOR (SIEMPRE AL FINAL)
 # ==========================================
-if __name__ == "__main__":
-    import uvicorn
-    puerto = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=puerto)
+
