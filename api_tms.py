@@ -433,4 +433,21 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
             
     except Exception as e:
         print(f"Error procesando Excel: {e}")
-        return {"exito": False, "error": "Error al leer el archivo."}
+        return {"exito": False, "error": "Error al leer el archivo."
+                
+@app.get("/historial")
+def obtener_historial(fecha: str):
+    try:
+        # 1. Cortamos el texto para quedarnos solo con el día (Ej: 2026-08-29)
+        fecha_corta = fecha.split("T")[0]
+        
+        # 2. Buscamos en Supabase desde las 00:00:00 hasta las 23:59:59 de ese día
+        response = supabase.table('rutas_asignadas') \
+            .select('*') \
+            .gte('created_at', f"{fecha_corta}T00:00:00") \
+            .lte('created_at', f"{fecha_corta}T23:59:59") \
+            .execute()
+            
+        return {"exito": True, "datos": response.data}
+    except Exception as e:
+        return {"exito": False, "error": str(e)}
