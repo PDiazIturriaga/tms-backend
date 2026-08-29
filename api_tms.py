@@ -315,6 +315,7 @@ async def entregar_pod(id_despacho: int = Form(...), file: UploadFile = File(...
         url_storage = f"{SUPABASE_URL}/storage/v1/object/pods/{nombre_archivo}"
         headers = {
             "Authorization": f"Bearer {SUPABASE_KEY}",
+            "apikey": SUPABASE_KEY, # <-- ESTA ES LA LÍNEA NUEVA QUE FALTA
             "Content-Type": file.content_type
         }
         res = requests.post(url_storage, headers=headers, data=contenido)
