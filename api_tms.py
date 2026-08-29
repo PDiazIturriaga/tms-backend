@@ -430,10 +430,8 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
             return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para {patente}."}
         else:
             return {"exito": False, "error": "El Excel estaba vacío o sin direcciones."}
-            
-    except Exception as e:
-        print(f"Error procesando Excel: {e}")
-        return {"exito": False, "error": "Error al leer el archivo."
+          
+    
                 
 @app.get("/historial")
 def obtener_historial(fecha: str):
@@ -451,3 +449,7 @@ def obtener_historial(fecha: str):
         return {"exito": True, "datos": response.data}
     except Exception as e:
         return {"exito": False, "error": str(e)}
+
+except Exception as e:
+        print(f"Error procesando Excel: {e}")
+        return {"exito": False, "error": "Error al leer el archivo."
