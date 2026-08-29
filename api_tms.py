@@ -42,7 +42,6 @@ def obtener_ruta_db(patente: str):
     conexion = psycopg2.connect(URL_BASE_DATOS)
     cursor = conexion.cursor(cursor_factory=RealDictCursor)
     
-    # AQUÍ ESTÁ EL ARREGLO: Agregamos 'cliente'
     cursor.execute("""
         SELECT id_despacho, orden, cliente, direccion, tipo, estado, foto_url 
         FROM rutas_asignadas 
