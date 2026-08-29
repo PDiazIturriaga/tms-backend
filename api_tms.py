@@ -391,50 +391,109 @@ async def descargar_plantilla():
     )
 
 @app.post("/subir-excel-ruta")
-async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...)):
+async def subir_excel_ruta(patente: str = Form(...), optimizar: str = Form("false"), file: UploadFile = File(...)):
     try:
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents), engine='openpyxl')
         df = df.dropna(how='all')
         
         records = []
+        geolocator = ArcGIS()
+        
         for index, row in df.iterrows():
             cliente = str(row.get('cliente', f'Cliente {index+1}')).strip()
             direccion = str(row.get('direccion', '')).strip()
-            orden = row.get('orden', index + 1)
+            orden_original = row.get('orden', index + 1)
             
             if not direccion or direccion == 'nan':
                 continue
+                
+            # Buscar coordenadas solo si el usuario pide optimizar
+            lat, lon = 0.0, 0.0
+            if optimizar == "true":
+                location = geolocator.geocode(f"{direccion}, Región Metropolitana, Chile", timeout=10)
+                if location:
+                    lat, lon = location.latitude, location.longitude
+                time.sleep(0.3) # Evitar saturar el GPS
                 
             records.append({
                 "patente": patente.upper(),
                 "cliente": cliente,
                 "direccion": direccion,
+                "latitud": lat,
+                "longitud": lon,
                 "estado": "PENDIENTE",
                 "tipo": "Entrega",
-                "orden": int(orden) if pd.notna(orden) else (index + 1)
+                "orden": int(orden_original) if pd.notna(orden_original) else (index + 1),
+                "ventana": "Cualquier horario"
             })
 
-        if records:
-            conexion = psycopg2.connect(URL_BASE_DATOS)
-            cursor = conexion.cursor()
-            
-            for r in records:
-                cursor.execute("""
-                    INSERT INTO rutas_asignadas (patente, orden, cliente, direccion, tipo, estado)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (r["patente"], r["orden"], r["cliente"], r["direccion"], r["tipo"], r["estado"]))
-                
-            conexion.commit()
-            conexion.close()
-            return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para {patente}."}
-        else:
+        if not records:
             return {"exito": False, "error": "El Excel estaba vacío o sin direcciones."}
+
+        # ==========================================
+        # SI EL USUARIO ELIGIÓ OPTIMIZAR CON IA
+        # ==========================================
+        if optimizar == "true" and len(records) > 1:
+            records[0]["tipo"] = "Inicio (Bodega)" # Asume que la fila 1 es el origen
+            distancias = []
             
+            for i in range(len(records)):
+                fila = []
+                for j in range(len(records)):
+                    if i == j:
+                        fila.append(0)
+                    else:
+                        fila.append(calcular_distancia(records[i]["latitud"], records[i]["longitud"], records[j]["latitud"], records[j]["longitud"]))
+                distancias.append(fila)
+
+            manager = pywrapcp.RoutingIndexManager(len(records), 1, 0)
+            routing = pywrapcp.RoutingModel(manager)
+
+            def distance_callback(from_index, to_index):
+                return distancias[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
+            
+            transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+            routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+            
+            search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+            search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+            solucion = routing.SolveWithParameters(search_parameters)
+
+            if solucion:
+                index_ruta = routing.Start(0)
+                paso = 0
+                while not routing.IsEnd(index_ruta):
+                    nodo = manager.IndexToNode(index_ruta)
+                    records[nodo]["orden"] = paso
+                    if paso > 0:
+                        records[nodo]["tipo"] = "Entrega"
+                    index_ruta = solucion.Value(routing.NextVar(index_ruta))
+                    paso += 1
+
+        # ==========================================
+        # GUARDAR RESULTADO EN BASE DE DATOS
+        # ==========================================
+        conexion = psycopg2.connect(URL_BASE_DATOS)
+        cursor = conexion.cursor()
+        
+        # Limpiar ruta anterior del chofer para evitar choques
+        cursor.execute("DELETE FROM rutas_asignadas WHERE patente = %s", (patente.upper(),))
+        
+        for r in records:
+            cursor.execute("""
+                INSERT INTO rutas_asignadas (patente, orden, cliente, direccion, latitud, longitud, tipo, estado)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (r["patente"], r["orden"], r["cliente"], r["direccion"], r["latitud"], r["longitud"], r["tipo"], r["estado"]))
+            
+        conexion.commit()
+        conexion.close()
+        
+        return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para {patente}."}
+        
     except Exception as e:
         print(f"Error procesando Excel: {e}")
         return {"exito": False, "error": f"Error al leer el archivo: {str(e)}"}
-
 # ==========================================
 # 8. HISTORIAL POR FECHAS
 # ==========================================
