@@ -44,7 +44,7 @@ def obtener_ruta_db(patente: str):
     
     # AQUÍ ESTÁ EL ARREGLO: Agregamos 'cliente'
     cursor.execute("""
-        SELECT id_despacho, orden, cliente, direccion, tipo, estado 
+        SELECT id_despacho, orden, cliente, direccion, tipo, estado, foto_url 
         FROM rutas_asignadas 
         WHERE patente = %s 
         ORDER BY orden ASC
