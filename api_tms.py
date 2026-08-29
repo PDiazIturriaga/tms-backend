@@ -430,26 +430,33 @@ async def subir_excel_ruta(patente: str = Form(...), file: UploadFile = File(...
             return {"exito": True, "mensaje": f"Se procesaron {len(records)} paradas para {patente}."}
         else:
             return {"exito": False, "error": "El Excel estaba vacío o sin direcciones."}
-          
-    
-                
+            
+    except Exception as e:
+        print(f"Error procesando Excel: {e}")
+        return {"exito": False, "error": f"Error al leer el archivo: {str(e)}"}
+
+# ==========================================
+# 8. HISTORIAL POR FECHAS
+# ==========================================
 @app.get("/historial")
 def obtener_historial(fecha: str):
     try:
         # 1. Cortamos el texto para quedarnos solo con el día (Ej: 2026-08-29)
         fecha_corta = fecha.split("T")[0]
         
-        # 2. Buscamos en Supabase desde las 00:00:00 hasta las 23:59:59 de ese día
-        response = supabase.table('rutas_asignadas') \
-            .select('*') \
-            .gte('created_at', f"{fecha_corta}T00:00:00") \
-            .lte('created_at', f"{fecha_corta}T23:59:59") \
-            .execute()
-            
-        return {"exito": True, "datos": response.data}
+        # 2. Conectamos por SQL y buscamos entre las 00:00:00 y las 23:59:59
+        conexion = psycopg2.connect(URL_BASE_DATOS)
+        cursor = conexion.cursor(cursor_factory=RealDictCursor)
+        
+        cursor.execute("""
+            SELECT * FROM rutas_asignadas 
+            WHERE created_at >= %s AND created_at <= %s
+            ORDER BY created_at DESC
+        """, (f"{fecha_corta} 00:00:00", f"{fecha_corta} 23:59:59"))
+        
+        filas = cursor.fetchall()
+        conexion.close()
+        
+        return {"exito": True, "datos": [dict(fila) for fila in filas]}
     except Exception as e:
         return {"exito": False, "error": str(e)}
-
-except Exception as e:
-        print(f"Error procesando Excel: {e}")
-        return {"exito": False, "error": "Error al leer el archivo."
